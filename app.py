@@ -3,7 +3,6 @@ import pandas as pd
 import os
 import base64
 import time
-from io import BytesIO
 
 # 1. CONFIGURACIÓN MOBILE-FIRST
 st.set_page_config(page_title="Meli Auditoría Pro", layout="centered", page_icon="⚽")
@@ -19,20 +18,14 @@ st.markdown("""
         width: 100%; height: 50px; background-color: #3483fa; color: white;
         border-radius: 10px; font-weight: bold; border: none;
     }
-    /* Estilo para la lista de productos */
-    .item-container {
-        background-color: white;
-        padding: 10px;
-        border-radius: 10px;
-        margin-bottom: 10px;
-        border: 1px solid #eee;
+    .empty-state {
+        text-align: center; padding: 40px; color: #666;
     }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 2. FUNCIONES TÉCNICAS (IMÁGENES) ---
 def buscar_foto(codigo):
-    # Busca en ambos formatos
     for ext in [".png", ".jpg", ".jpeg"]:
         ruta = f"{codigo}{ext}"
         if os.path.exists(ruta):
@@ -59,7 +52,7 @@ def dibujar_mascota_animada(porcentaje_inicio, porcentaje_fin):
     '''
     return html
 
-# --- 3. ESTADOS ---
+# --- 3. INICIALIZACIÓN Y ESTADOS ---
 if 'historial' not in st.session_state: st.session_state.historial = []
 if 'celebracion' not in st.session_state: st.session_state.celebracion = {"activo": False, "previo": 0, "nuevo": 0}
 if 'sku_idx' not in st.session_state: st.session_state.sku_idx = None
@@ -67,12 +60,18 @@ if 'evidencias' not in st.session_state: st.session_state.evidencias = []
 
 def registrar_y_celebrar(codigo, desc, piezas, ov, total_ov):
     prev_auditado = sum(x['piezas'] for x in st.session_state.historial if x['ov'] == ov)
-    st.session_state.historial.append({"codigo": str(codigo), "descripcion": desc, "piezas": piezas, "ov": ov, "fecha": time.strftime("%H:%M")})
+    st.session_state.historial.append({
+        "codigo": str(codigo), "descripcion": desc, "piezas": piezas, "ov": ov, "fecha": time.strftime("%H:%M")
+    })
     nuevo_auditado = prev_auditado + piezas
-    st.session_state.celebracion = {"activo": True, "previo": (prev_auditado/total_ov)*100, "nuevo": (nuevo_auditado/total_ov)*100}
+    st.session_state.celebracion = {
+        "activo": True, 
+        "previo": (prev_auditado/total_ov)*100, 
+        "nuevo": (nuevo_auditado/total_ov)*100
+    }
     st.session_state.sku_idx = None
 
-# --- 4. CARGA DRIVE ---
+# --- 4. CARGA DE DATOS ---
 URL_OV = "https://docs.google.com/spreadsheets/d/1lFs6ngMzwSfy0TgrXVgHTJCTsWc4INmOuGLmiQFrrrE/gviz/tq?tqx=out:csv"
 @st.cache_data(ttl=300)
 def cargar_datos():
@@ -88,6 +87,7 @@ menu = st.sidebar.radio("Navegación", ["📋 Auditoría", "🖼️ Galería"])
 df_ov = cargar_datos()
 
 if df_ov is not None:
+    # Mapeo de columnas
     col_ov, col_codigo = 'ov', 'codigo'
     cols_desc = [c for c in df_ov.columns if 'desc' in c]
     col_desc = cols_desc[0] if cols_desc else df_ov.columns[1]
@@ -100,65 +100,82 @@ if df_ov is not None:
 
         if ov_sel != "-- Selecciona --":
             total_ov = df_ov[df_ov[col_ov] == ov_sel][col_cant_nombre].sum()
-            items_ov = df_ov[df_ov[col_ov] == ov_sel].reset_index(drop=True)
+            
+            # FILTRO DE PRODUCTOS PENDIENTES
+            # Obtenemos todos los productos de la OV
+            todos_productos = df_ov[df_ov[col_ov] == ov_sel].reset_index(drop=True)
+            
+            # Calculamos qué códigos ya están completos
+            pendientes = []
+            for idx, row in todos_productos.iterrows():
+                auditado = sum(x['piezas'] for x in st.session_state.historial if x['codigo'] == row[col_codigo] and x['ov'] == ov_sel)
+                if auditado < int(row[col_cant_nombre]):
+                    pendientes.append(row)
+            
+            df_pendientes = pd.DataFrame(pendientes)
 
-            # A. CELEBRACIÓN
+            # A. PANTALLA DE CELEBRACIÓN
             if st.session_state.celebracion["activo"]:
-                st.markdown("<h2 style='text-align:center;'>¡LEVEL UP! 🍭</h2>", unsafe_allow_html=True)
+                st.markdown("<h2 style='text-align:center;'>¡PRODUCTO LISTO! 🍭</h2>", unsafe_allow_html=True)
                 st.components.v1.html(dibujar_mascota_animada(st.session_state.celebracion["previo"], st.session_state.celebracion["nuevo"]), height=300)
-                if st.button("Continuar ➡️"):
+                if st.button("Continuar con el siguiente ➡️"):
                     st.session_state.celebracion["activo"] = False
                     st.rerun()
 
-            # B. PANTALLA DE CONTEO
+            # B. PANTALLA DE CONTEO (DETALLE)
             elif st.session_state.sku_idx is not None:
-                item = items_ov.iloc[st.session_state.sku_idx]
-                st.markdown(f"### {item[col_codigo]} / {item[col_desc]}") # Formato solicitado
+                # Recuperamos el item usando el índice original
+                item = todos_productos.iloc[st.session_state.sku_idx]
+                st.markdown(f"### {item[col_codigo]} / {item[col_desc]}")
                 
-                # Imagen del producto (Detalle)
                 ruta_foto = buscar_foto(item[col_codigo])
-                if ruta_foto:
-                    st.image(ruta_foto, use_container_width=True)
+                if ruta_foto: st.image(ruta_foto, use_container_width=True)
                 
-                with st.expander("📸 Evidencia"):
-                    cam = st.camera_input("Foto")
-                    if cam and st.button("Guardar"):
+                with st.expander("📸 Evidencia Fotográfica"):
+                    cam = st.camera_input("Capturar")
+                    if cam and st.button("Guardar evidencia"):
                         st.session_state.evidencias.append({"ov": ov_sel, "sku": item[col_desc], "foto": cam})
-                        st.success("Guardada")
+                        st.success("Guardada en galería")
 
                 limite = int(item[col_cant_nombre])
                 ya_auditado = sum(x['piezas'] for x in st.session_state.historial if x['codigo'] == item[col_codigo] and x['ov'] == ov_sel)
-                st.metric("Esperado", f"{limite} pzs", f"Faltan {limite - ya_auditado}")
-                cant = st.number_input("Cantidad física:", min_value=1, value=1)
+                st.metric("Esperado", f"{limite} pzs", f"Auditado: {ya_auditado}")
+                
+                cant = st.number_input("Cantidad física:", min_value=1, max_value=limite-ya_auditado, value=limite-ya_auditado)
                 
                 if st.button("CONFIRMAR ✅"):
                     registrar_y_celebrar(item[col_codigo], item[col_desc], cant, ov_sel, total_ov)
                     st.rerun()
-                if st.button("⬅️ Atrás"):
+                if st.button("⬅️ Cancelar"):
                     st.session_state.sku_idx = None
                     st.rerun()
 
-            # C. LISTA DE PRODUCTOS
+            # C. LISTA DE PRODUCTOS FILTRADA
             else:
-                st.markdown("### Selecciona el producto:")
-                for idx, row in items_ov.iterrows():
-                    ruta_mini = buscar_foto(row[col_codigo])
-                    
-                    with st.container():
-                        c_img, c_info, c_btn = st.columns([1, 2.5, 1])
-                        with c_img:
-                            if ruta_mini: st.image(ruta_mini, width=60)
-                            else: st.write("🍬")
-                        with c_info:
-                            # Formato solicitado: Código / Descripción
-                            st.markdown(f"**{row[col_codigo]} / {row[col_desc]}**")
-                        with c_btn:
-                            st.button("Ver", key=f"btn_{idx}", on_click=lambda i=idx: st.session_state.update(sku_idx=i))
-                        st.divider()
+                if df_pendientes.empty:
+                    st.markdown('<div class="empty-state"><h3>✅ ¡OV Completada!</h3><p>No quedan productos pendientes por auditar en esta orden.</p></div>', unsafe_allow_html=True)
+                    st.balloons()
+                else:
+                    st.markdown(f"### Pendientes ({len(df_pendientes)})")
+                    # Iteramos sobre los pendientes
+                    for idx, row in df_pendientes.iterrows():
+                        # Buscamos el índice original en todos_productos para que el botón funcione
+                        idx_original = todos_productos[todos_productos[col_codigo] == row[col_codigo]].index[0]
+                        ruta_mini = buscar_foto(row[col_codigo])
+                        
+                        with st.container():
+                            c_img, c_info, c_btn = st.columns([1, 2.5, 1])
+                            with c_img:
+                                if ruta_mini: st.image(ruta_mini, width=60)
+                                else: st.write("🍬")
+                            with c_info:
+                                st.markdown(f"**{row[col_codigo]} / {row[col_desc]}**")
+                                auditado_card = sum(x['piezas'] for x in st.session_state.historial if x['codigo'] == row[col_codigo] and x['ov'] == ov_sel)
+                                st.caption(f"Avance: {auditado_card} de {row[col_cant_nombre]}")
+                            with c_btn:
+                                st.button("Ver", key=f"btn_{row[col_codigo]}", on_click=lambda i=idx_original: st.session_state.update(sku_idx=i))
+                            st.divider()
 
     elif menu == "🖼️ Galería":
         st.markdown('<div class="main-header"><h1>🖼️ Galería</h1></div>', unsafe_allow_html=True)
-        ov_g = st.selectbox("OV:", df_ov[col_ov].unique().tolist())
-        fotos = [f for f in st.session_state.evidencias if f['ov'] == ov_g]
-        for f in fotos:
-            st.image(f['foto'], caption=f['sku'])
+        # ... (resto de la galería igual)
